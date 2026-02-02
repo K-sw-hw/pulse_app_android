@@ -1,0 +1,28 @@
+import 'package:flutter/material.dart';
+
+class AppConstants {
+  // Colori
+  static const Color primaryGreen = Color(0xFF4ECDC4);
+  static const Color darkGreen = Color(0xFF2DB5AC);
+  static const Color backgroundColor = Color(0xFFFAFAFA);
+  static const Color textDark = Color(0xFF000000);
+  static const Color graphLine = Color(0xFF000000);
+  
+  // Dimensioni
+  static const double headerHeight = 100.0;
+  static const double bottomBarHeight = 80.0;
+  static const double graphHeight = 250.0;
+  static const double aiCardHeight = 200.0;
+  
+  // Audio settings
+  static const int updateIntervalMs = 100;
+  static const int resetIntervalSeconds = 30;
+  static const double minDecibels = 0.0;
+  static const double maxDecibels = 120.0;
+  static const double defaultSensitivity = 1.0;
+  static const double minSensitivity = 0.5;
+  static const double maxSensitivity = 2.0;
+  
+  // Grafico
+  static const int maxDataPoints = 300; // 30 secondi a 100ms
+}
