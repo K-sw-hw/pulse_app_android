@@ -5,12 +5,14 @@ class CustomBottomNavigationBar extends StatelessWidget {
   final VoidCallback onBluetoothTap;
   final VoidCallback onHomeTap;
   final VoidCallback onSettingsTap;
+  final bool isDarkMode;
   
   const CustomBottomNavigationBar({
     super.key,
     required this.onBluetoothTap,
     required this.onHomeTap,
     required this.onSettingsTap,
+    this.isDarkMode = false,
   });
   
   @override

@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import 'dart:async';
 import '../services/audio_service.dart';
+import '../services/bluetooth_service.dart';
 import '../services/permission_service.dart';
+import '../services/settings_service.dart';
 import '../models/audio_data.dart';
 import '../utils/audio_utils.dart';
 import '../utils/constants.dart';
@@ -9,6 +11,8 @@ import '../widgets/audio_spectrogram.dart' as spectrogram;
 import '../widgets/noise_level_display.dart' as noise;
 import '../widgets/ai_recognition_card.dart' as ai;
 import '../widgets/bottom_navigation_bar.dart';
+import 'bluetooth_screen.dart';
+import '../screens/settings_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -19,58 +23,129 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> {
   final AudioService _audioService = AudioService();
+  final BluetoothService _bluetoothService = BluetoothService();
+  
   final List<AudioData> _audioDataList = [];
   NoiseClassification? _currentClassification;
   double _currentDecibels = 0.0;
+  double _thresholdDb = AppConstants.defaultThresholdDb;
+  bool _adaptiveThreshold = false;
+  bool _isDarkMode = false;
+  bool _lastAlertSent = false;
+  
+  // Buffer per soglia adattiva
+  final List<double> _recentDecibels = [];
   
   StreamSubscription? _audioSubscription;
   StreamSubscription? _resetSubscription;
+  Timer? _classificationTimer;
   
   @override
   void initState() {
     super.initState();
+    _loadSettings();
     _initializeAudio();
   }
   
+  Future<void> _loadSettings() async {
+    await SettingsService.initialize();
+    setState(() {
+      _thresholdDb = SettingsService.getThreshold();
+      _adaptiveThreshold = SettingsService.isAdaptiveThreshold();
+      _isDarkMode = SettingsService.isDarkMode();
+    });
+  }
+  
   Future<void> _initializeAudio() async {
-    // Richiedi permessi
+    await Future.delayed(const Duration(milliseconds: 500));
+    
     bool hasPermission = await PermissionService.requestMicrophonePermission();
     
     if (!hasPermission) {
-      _showPermissionDeniedDialog();
+      if (mounted) _showPermissionDeniedDialog();
       return;
     }
     
-    // Avvia registrazione
+    await Future.delayed(const Duration(milliseconds: 300));
+    
     bool started = await _audioService.startRecording();
     
     if (started) {
-      // Ascolta i dati audio
       _audioSubscription = _audioService.audioStream.listen((audioData) {
+        if (!mounted) return;
         setState(() {
           _audioDataList.add(audioData);
           _currentDecibels = audioData.decibels;
           
-          // Mantieni solo gli ultimi 300 punti (30 secondi)
           if (_audioDataList.length > AppConstants.maxDataPoints) {
             _audioDataList.removeAt(0);
           }
           
-          // Classifica il rumore ogni 10 punti
-          if (_audioDataList.length % 10 == 0) {
-            _currentClassification = AudioUtils.classifyNoise(_audioDataList);
+          // Aggiorna buffer per soglia adattiva
+          if (_adaptiveThreshold) {
+            _recentDecibels.add(audioData.decibels);
+            if (_recentDecibels.length > 50) {
+              _recentDecibels.removeAt(0);
+            }
+            _updateAdaptiveThreshold();
           }
+          
+          // Controlla soglia e invia alert ESP32
+          _checkThresholdAndAlert();
         });
       });
       
-      // Ascolta i reset automatici
       _resetSubscription = _audioService.resetStream.listen((_) {
+        if (!mounted) return;
         setState(() {
           _audioDataList.clear();
           _currentDecibels = 0.0;
           _currentClassification = null;
         });
       });
+      
+      // Timer per classificazione ogni 1 secondo
+      _classificationTimer = Timer.periodic(
+        const Duration(seconds: 1),
+        (_) {
+          if (_audioDataList.length >= 10 && mounted) {
+            setState(() {
+              _currentClassification = AudioUtils.classifyNoise(_audioDataList);
+            });
+          }
+        },
+      );
+    }
+  }
+  
+  void _updateAdaptiveThreshold() {
+    if (_recentDecibels.isEmpty) return;
+    
+    // Calcola la media degli ultimi 50 campioni
+    double avg = _recentDecibels.reduce((a, b) => a + b) / _recentDecibels.length;
+    
+    // Imposta soglia a +15dB sopra la media
+    double newThreshold = (avg + 15).clamp(
+      AppConstants.minThresholdDb,
+      AppConstants.maxThresholdDb,
+    );
+    
+    if ((newThreshold - _thresholdDb).abs() > 5) {
+      setState(() {
+        _thresholdDb = newThreshold;
+      });
+    }
+  }
+  
+  void _checkThresholdAndAlert() {
+    bool aboveThreshold = _currentDecibels >= _thresholdDb;
+    
+    // Invia alert solo quando supera la soglia (non continuamente)
+    if (aboveThreshold && !_lastAlertSent) {
+      _bluetoothService.sendThresholdAlert(_currentDecibels);
+      _lastAlertSent = true;
+    } else if (!aboveThreshold) {
+      _lastAlertSent = false;
     }
   }
   
@@ -80,8 +155,7 @@ class _HomeScreenState extends State<HomeScreen> {
       builder: (context) => AlertDialog(
         title: const Text('Permesso negato'),
         content: const Text(
-          'L\'app ha bisogno del permesso del microfono per funzionare. '
-          'Vai nelle impostazioni per abilitarlo.',
+          'L\'app ha bisogno del permesso del microfono per funzionare.',
         ),
         actions: [
           TextButton(
@@ -114,9 +188,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   label: tempSensitivity.toStringAsFixed(1),
                   activeColor: AppConstants.primaryGreen,
                   onChanged: (value) {
-                    setDialogState(() {
-                      tempSensitivity = value;
-                    });
+                    setDialogState(() => tempSensitivity = value);
                   },
                 ),
               ],
@@ -148,19 +220,54 @@ class _HomeScreenState extends State<HomeScreen> {
     });
   }
   
+  void _navigateToBluetooth() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => BluetoothScreen(
+          bluetoothService: _bluetoothService,
+          isDarkMode: _isDarkMode,
+        ),
+      ),
+    );
+  }
+  
+  void _navigateToSettings() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => SettingsScreen(
+          isDarkMode: _isDarkMode,
+          onThemeChanged: (isDark) {
+            setState(() => _isDarkMode = isDark);
+          },
+        ),
+      ),
+    ).then((_) {
+      // Ricarica impostazioni quando si torna
+      _loadSettings();
+    });
+  }
+  
   @override
   void dispose() {
     _audioSubscription?.cancel();
     _resetSubscription?.cancel();
+    _classificationTimer?.cancel();
     _audioService.stopRecording();
     _audioService.dispose();
+    _bluetoothService.dispose();
     super.dispose();
   }
   
   @override
   Widget build(BuildContext context) {
+    final bgColor = _isDarkMode 
+        ? AppConstants.darkBackgroundColor 
+        : AppConstants.backgroundColor;
+    
     return Scaffold(
-      backgroundColor: AppConstants.backgroundColor,
+      backgroundColor: bgColor,
       body: SafeArea(
         child: Column(
           children: [
@@ -177,15 +284,52 @@ class _HomeScreenState extends State<HomeScreen> {
                   ],
                 ),
               ),
-              child: const Center(
-                child: Text(
-                  'PULSE APP',
-                  style: TextStyle(
-                    fontSize: 28,
-                    fontWeight: FontWeight.bold,
-                    color: AppConstants.textDark,
+              child: Stack(
+                children: [
+                  const Center(
+                    child: Text(
+                      'PULSE APP',
+                      style: TextStyle(
+                        fontSize: 28,
+                        fontWeight: FontWeight.bold,
+                        color: AppConstants.textDark,
+                      ),
+                    ),
                   ),
-                ),
+                  // Indicatore connessione Bluetooth
+                  if (_bluetoothService.isConnected)
+                    Positioned(
+                      top: 16,
+                      right: 16,
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 8,
+                          vertical: 4,
+                        ),
+                        decoration: BoxDecoration(
+                          color: Colors.white,
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: Row(
+                          children: const [
+                            Icon(
+                              Icons.bluetooth_connected,
+                              size: 16,
+                              color: AppConstants.primaryGreen,
+                            ),
+                            SizedBox(width: 4),
+                            Text(
+                              'ESP32',
+                              style: TextStyle(
+                                fontSize: 12,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                ],
               ),
             ),
             
@@ -194,15 +338,21 @@ class _HomeScreenState extends State<HomeScreen> {
               child: SingleChildScrollView(
                 child: Column(
                   children: [
-                    // Spectrogram
-                    spectrogram.AudioSpectrogram(audioData: _audioDataList),
-                    
-                    // Noise level
-                    noise.NoiseLevelDisplay(decibels: _currentDecibels),
-                    
-                    // AI Recognition
-                    ai.AiRecognitionCard(classification: _currentClassification),
-                    
+                    spectrogram.AudioSpectrogram(
+                      audioData: _audioDataList,
+                      isDarkMode: _isDarkMode,
+                    ),
+                    noise.NoiseLevelDisplay(
+                      decibels: _currentDecibels,
+                      isDarkMode: _isDarkMode,
+                    ),
+                    ai.AiRecognitionCard(
+                      classification: _currentClassification,
+                      isDarkMode: _isDarkMode,
+                      thresholdDb: _thresholdDb,
+                      currentDb: _currentDecibels,
+                      adaptiveEnabled: _adaptiveThreshold,
+                    ),
                     const SizedBox(height: 20),
                   ],
                 ),
@@ -211,14 +361,10 @@ class _HomeScreenState extends State<HomeScreen> {
             
             // Bottom Navigation
             CustomBottomNavigationBar(
-              onBluetoothTap: () {
-                // Funzionalità Bluetooth (da implementare)
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('Bluetooth (non implementato)')),
-                );
-              },
+              onBluetoothTap: _navigateToBluetooth,
               onHomeTap: _resetGraph,
-              onSettingsTap: _showSensitivityDialog,
+              onSettingsTap: _navigateToSettings,
+              isDarkMode: _isDarkMode,
             ),
           ],
         ),

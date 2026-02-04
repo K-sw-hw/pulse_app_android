@@ -3,22 +3,28 @@ import '../utils/constants.dart';
 
 class NoiseLevelDisplay extends StatelessWidget {
   final double decibels;
+  final bool isDarkMode;
   
   const NoiseLevelDisplay({
-    Key? key,
+    super.key,
     required this.decibels,
-  }) : super(key: key);
+    this.isDarkMode = false,
+  });
   
   @override
   Widget build(BuildContext context) {
+    final textColor = isDarkMode 
+        ? AppConstants.darkTextColor 
+        : AppConstants.textDark;
+    
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 16.0),
       child: Text(
         'Noise: ${decibels.toStringAsFixed(0)} dB',
-        style: const TextStyle(
+        style: TextStyle(
           fontSize: 18,
           fontWeight: FontWeight.bold,
-          color: AppConstants.textDark,
+          color: textColor,
         ),
       ),
     );

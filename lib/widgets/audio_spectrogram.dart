@@ -5,25 +5,34 @@ import '../utils/constants.dart';
 
 class AudioSpectrogram extends StatelessWidget {
   final List<AudioData> audioData;
+  final bool isDarkMode;
   
   const AudioSpectrogram({
     super.key,
     required this.audioData,
+    this.isDarkMode = false,
   });
   
   @override
   Widget build(BuildContext context) {
+    final textColor = isDarkMode 
+        ? AppConstants.darkTextColor 
+        : AppConstants.textDark;
+    final lineColor = isDarkMode 
+        ? AppConstants.darkGraphLine 
+        : AppConstants.graphLine;
+    
     return Container(
       height: AppConstants.graphHeight,
       padding: const EdgeInsets.all(16.0),
       child: Column(
         children: [
-          const Text(
+          Text(
             'SPECTROGRAM',
             style: TextStyle(
               fontSize: 20,
               fontWeight: FontWeight.bold,
-              color: AppConstants.textDark,
+              color: textColor,
             ),
           ),
           const SizedBox(height: 20),
@@ -43,14 +52,14 @@ class AudioSpectrogram extends StatelessWidget {
                         LineChartBarData(
                           spots: _generateSpots(),
                           isCurved: true,
-                          color: AppConstants.graphLine,
+                          color: lineColor,
                           barWidth: 3,
                           dotData: FlDotData(
                             show: true,
                             getDotPainter: (spot, percent, barData, index) {
                               return FlDotCirclePainter(
                                 radius: 4,
-                                color: AppConstants.graphLine,
+                                color: lineColor,
                                 strokeWidth: 2,
                                 strokeColor: Colors.white,
                               );
