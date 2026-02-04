@@ -5,6 +5,10 @@ class BluetoothService {
   fbp.BluetoothDevice? _connectedDevice;
   fbp.BluetoothCharacteristic? _characteristic;
   
+  // UUID dell'ESP32 (devono corrispondere al codice Arduino)
+  static const String serviceUUID = "4fafc201-1fb5-459e-8fcc-c5c9c331914b";
+  static const String characteristicUUID = "beb5483e-36e1-4688-b7f5-ea07361b26a8";
+  
   // Stream per i dispositivi trovati
   Stream<List<fbp.ScanResult>> get scanResults => fbp.FlutterBluePlus.scanResults;
   
@@ -24,10 +28,17 @@ class BluetoothService {
         return;
       }
 
-      // Avvia lo scan (durata 4 secondi)
-      await fbp.FlutterBluePlus.startScan(timeout: const Duration(seconds: 4));
+      // Ferma eventuali scan in corso
+      await fbp.FlutterBluePlus.stopScan();
+      
+      // Avvia lo scan (durata 8 secondi per dare più tempo)
+      await fbp.FlutterBluePlus.startScan(
+        timeout: const Duration(seconds: 8),
+        androidUsesFineLocation: true,
+      );
     } catch (e) {
-      // Gestione errori silenziosa
+      // Gestione errori
+      print('Errore scan: $e');
     }
   }
 
@@ -39,32 +50,59 @@ class BluetoothService {
   // Connetti a un dispositivo
   Future<bool> connectToDevice(fbp.BluetoothDevice device) async {
     try {
+      print('Tentativo connessione a: ${device.platformName}');
+      
       // Disconnetti il dispositivo precedente se esiste
       if (_connectedDevice != null) {
         await disconnectDevice();
+        await Future.delayed(const Duration(milliseconds: 500));
       }
 
-      // Connetti
-      await device.connect(timeout: const Duration(seconds: 10));
+      // Connetti con timeout più lungo
+      await device.connect(
+        timeout: const Duration(seconds: 15),
+        autoConnect: false,
+      );
+      
+      print('Connesso! Scoperta servizi...');
       _connectedDevice = device;
+
+      // Aspetta un attimo prima di scoprire i servizi
+      await Future.delayed(const Duration(milliseconds: 1000));
 
       // Scopri i servizi
       List<fbp.BluetoothService> services = await device.discoverServices();
+      print('Trovati ${services.length} servizi');
       
-      // Trova la caratteristica per scrivere (cerca servizio custom ESP32)
+      // Cerca il servizio specifico dell'ESP32
       for (fbp.BluetoothService service in services) {
-        for (fbp.BluetoothCharacteristic char in service.characteristics) {
-          if (char.properties.write) {
-            _characteristic = char;
-            break;
+        print('Servizio: ${service.uuid}');
+        
+        // Controlla se è il nostro servizio
+        if (service.uuid.toString().toLowerCase() == serviceUUID.toLowerCase()) {
+          print('✓ Servizio Pulse trovato!');
+          
+          // Cerca la caratteristica
+          for (fbp.BluetoothCharacteristic char in service.characteristics) {
+            print('  Caratteristica: ${char.uuid}');
+            
+            if (char.uuid.toString().toLowerCase() == characteristicUUID.toLowerCase()) {
+              print('✓ Caratteristica trovata!');
+              _characteristic = char;
+              _connectionStateController.add(true);
+              return true;
+            }
           }
         }
-        if (_characteristic != null) break;
       }
-
-      _connectionStateController.add(true);
-      return true;
+      
+      // Se arriviamo qui, non abbiamo trovato il servizio
+      print('❌ Servizio o caratteristica non trovati');
+      await disconnectDevice();
+      return false;
+      
     } catch (e) {
+      print('Errore connessione: $e');
       _connectedDevice = null;
       _characteristic = null;
       _connectionStateController.add(false);
@@ -77,9 +115,10 @@ class BluetoothService {
     try {
       if (_connectedDevice != null) {
         await _connectedDevice!.disconnect();
+        print('Disconnesso');
       }
     } catch (e) {
-      // Ignora errori
+      print('Errore disconnessione: $e');
     } finally {
       _connectedDevice = null;
       _characteristic = null;
@@ -90,13 +129,20 @@ class BluetoothService {
   // Invia comando all'ESP32
   Future<bool> sendCommand(String command) async {
     if (_characteristic == null || _connectedDevice == null) {
+      print('Nessun dispositivo connesso');
       return false;
     }
 
     try {
-      await _characteristic!.write(command.codeUnits, withoutResponse: false);
+      print('Invio comando: $command');
+      await _characteristic!.write(
+        command.codeUnits,
+        withoutResponse: false,
+      );
+      print('Comando inviato con successo');
       return true;
     } catch (e) {
+      print('Errore invio comando: $e');
       return false;
     }
   }
