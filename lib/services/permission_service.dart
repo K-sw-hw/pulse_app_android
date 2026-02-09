@@ -15,7 +15,6 @@ class PermissionService {
     }
     
     if (status.isPermanentlyDenied) {
-      // Apri settings per dare permesso manualmente
       await openAppSettings();
       return false;
     }
@@ -26,5 +25,28 @@ class PermissionService {
   // Verifica se il permesso è già stato dato
   static Future<bool> isMicrophonePermissionGranted() async {
     return await Permission.microphone.isGranted;
+  }
+  
+  // Richiede permessi Bluetooth
+  static Future<bool> requestBluetoothPermissions() async {
+    Map<Permission, PermissionStatus> statuses = await [
+      Permission.bluetoothScan,
+      Permission.bluetoothConnect,
+      Permission.location,
+    ].request();
+    
+    bool allGranted = statuses.values.every((status) => status.isGranted);
+    
+    if (!allGranted) {
+      // Verifica se qualche permesso è permanentemente negato
+      bool anyPermanentlyDenied = statuses.values.any(
+        (status) => status.isPermanentlyDenied
+      );
+      if (anyPermanentlyDenied) {
+        await openAppSettings();
+      }
+    }
+    
+    return allGranted;
   }
 }

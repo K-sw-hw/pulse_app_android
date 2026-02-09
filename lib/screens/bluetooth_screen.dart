@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart' as fbp;
 import '../services/bluetooth_service.dart';
-import '../services/settings_service.dart';
 import '../utils/constants.dart';
 
 class BluetoothScreen extends StatefulWidget {
@@ -20,44 +19,99 @@ class BluetoothScreen extends StatefulWidget {
 
 class _BluetoothScreenState extends State<BluetoothScreen> {
   bool _isScanning = false;
+  String _statusMessage = 'Pronto';
+  List<fbp.ScanResult> _devices = [];
 
   @override
   void initState() {
     super.initState();
-    _startScan();
+    _listenToStatus();
+    _listenToScanResults();
   }
 
-  Future<void> _startScan() async {
-    setState(() => _isScanning = true);
-    await widget.bluetoothService.startScan();
-    await Future.delayed(const Duration(seconds: 4));
-    if (mounted) setState(() => _isScanning = false);
-  }
-
-  Future<void> _connectToDevice(fbp.BluetoothDevice device) async {
-    final success = await widget.bluetoothService.connectToDevice(device);
-    
-    if (!mounted) return;
-    
-    if (success) {
-      await SettingsService.setConnectedDeviceId(device.remoteId.toString());
+  void _listenToStatus() {
+    widget.bluetoothService.statusStream.listen((message) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Connesso a ${device.platformName}')),
-        );
+        setState(() => _statusMessage = message);
       }
-    } else {
+    });
+  }
+
+  void _listenToScanResults() {
+    widget.bluetoothService.scanResults.listen((results) {
       if (mounted) {
+        // Filtra solo ESP32
+        setState(() {
+          _devices = results.where((r) => 
+            r.device.platformName.toLowerCase().contains('esp32')
+          ).toList();
+        });
+      }
+    });
+  }
+
+  Future<void> _autoConnect() async {
+    setState(() {
+      _isScanning = true;
+      _statusMessage = '🔍 Ricerca ESP32...';
+    });
+    
+    bool success = await widget.bluetoothService.autoConnect();
+    
+    if (mounted) {
+      setState(() => _isScanning = false);
+      
+      if (success) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Connessione fallita')),
+          const SnackBar(
+            content: Text('✅ ESP32 connesso!'),
+            backgroundColor: AppConstants.primaryGreen,
+          ),
+        );
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('❌ ESP32 non trovato'),
+            backgroundColor: Colors.red,
+          ),
         );
       }
     }
   }
 
-  Future<void> _disconnectDevice() async {
+  Future<void> _manualScan() async {
+    setState(() {
+      _isScanning = true;
+      _statusMessage = 'Scansione...';
+    });
+    
+    await widget.bluetoothService.startScan();
+    
+    await Future.delayed(const Duration(seconds: 8));
+    
+    if (mounted) {
+      setState(() => _isScanning = false);
+    }
+  }
+
+  Future<void> _connectToDevice(fbp.BluetoothDevice device) async {
+    bool success = await widget.bluetoothService.connectToDevice(device);
+    
+    if (!mounted) return;
+    
+    if (success) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('✅ Connesso a ${device.platformName}')),
+      );
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('❌ Connessione fallita')),
+      );
+    }
+  }
+
+  Future<void> _disconnect() async {
     await widget.bluetoothService.disconnectDevice();
-    await SettingsService.setConnectedDeviceId(null);
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Disconnesso')),
@@ -80,212 +134,210 @@ class _BluetoothScreenState extends State<BluetoothScreen> {
     return Scaffold(
       backgroundColor: bgColor,
       appBar: AppBar(
-        title: const Text('Bluetooth'),
+        title: const Text('Bluetooth ESP32'),
         backgroundColor: AppConstants.primaryGreen,
         foregroundColor: Colors.black,
-        actions: [
-          if (_isScanning)
-            const Padding(
-              padding: EdgeInsets.all(16.0),
-              child: SizedBox(
-                width: 20,
-                height: 20,
-                child: CircularProgressIndicator(
-                  strokeWidth: 2,
-                  color: Colors.black,
-                ),
-              ),
-            )
-          else
-            IconButton(
-              icon: const Icon(Icons.refresh),
-              onPressed: _startScan,
-            ),
-        ],
       ),
       body: Column(
         children: [
-          // Dispositivo connesso
-          if (widget.bluetoothService.isConnected)
-            Container(
-              width: double.infinity,
-              margin: const EdgeInsets.all(16),
-              padding: const EdgeInsets.all(16),
-              decoration: BoxDecoration(
-                color: AppConstants.primaryGreen.withValues(alpha: 0.2),
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: AppConstants.primaryGreen, width: 2),
-              ),
-              child: Row(
-                children: [
-                  const Icon(Icons.bluetooth_connected, 
-                      color: AppConstants.primaryGreen, size: 32),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        const Text(
-                          'Connesso',
-                          style: TextStyle(
-                            fontSize: 12,
-                            color: AppConstants.primaryGreen,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                        Text(
-                          widget.bluetoothService.connectedDevice?.platformName ?? 
-                          'Dispositivo',
-                          style: TextStyle(
-                            fontSize: 16,
-                            fontWeight: FontWeight.bold,
-                            color: textColor,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  ElevatedButton(
-                    onPressed: _disconnectDevice,
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.red,
-                      foregroundColor: Colors.white,
-                    ),
-                    child: const Text('Disconnetti'),
-                  ),
-                ],
-              ),
-            ),
-
-          // Lista dispositivi
-          Padding(
-            padding: const EdgeInsets.all(16.0),
+          // Status bar
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(16),
+            color: widget.bluetoothService.isConnected
+                ? AppConstants.primaryGreen.withValues(alpha: 0.2)
+                : Colors.grey.withValues(alpha: 0.2),
             child: Row(
               children: [
-                Icon(Icons.devices, color: textColor),
-                const SizedBox(width: 8),
-                Text(
-                  'Dispositivi disponibili',
-                  style: TextStyle(
-                    fontSize: 18,
-                    fontWeight: FontWeight.bold,
-                    color: textColor,
+                Icon(
+                  widget.bluetoothService.isConnected
+                      ? Icons.bluetooth_connected
+                      : Icons.bluetooth_disabled,
+                  color: widget.bluetoothService.isConnected
+                      ? AppConstants.primaryGreen
+                      : Colors.grey,
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Text(
+                    _statusMessage,
+                    style: TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.bold,
+                      color: textColor,
+                    ),
                   ),
                 ),
+                if (_isScanning)
+                  const SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: AppConstants.primaryGreen,
+                    ),
+                  ),
               ],
             ),
           ),
 
-          Expanded(
-            child: StreamBuilder<List<fbp.ScanResult>>(
-              stream: widget.bluetoothService.scanResults,
-              builder: (context, snapshot) {
-                if (snapshot.hasData && snapshot.data!.isNotEmpty) {
-                  return ListView.builder(
-                    itemCount: snapshot.data!.length,
-                    itemBuilder: (context, index) {
-                      final result = snapshot.data![index];
-                      final device = result.device;
-                      final isConnected = widget.bluetoothService.connectedDevice?.remoteId == 
-                                         device.remoteId;
+          const SizedBox(height: 24),
 
-                      return Container(
-                        margin: const EdgeInsets.symmetric(
-                          horizontal: 16,
-                          vertical: 4,
+          // Pulsante grande "CONNETTI"
+          Padding(
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              children: [
+                if (!widget.bluetoothService.isConnected) ...[
+                  // Pulsante CONNETTI grande
+                  SizedBox(
+                    width: double.infinity,
+                    height: 120,
+                    child: ElevatedButton(
+                      onPressed: _isScanning ? null : _autoConnect,
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: AppConstants.primaryGreen,
+                        foregroundColor: Colors.black,
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(20),
                         ),
-                        decoration: BoxDecoration(
-                          color: cardColor,
-                          borderRadius: BorderRadius.circular(8),
-                          border: isConnected 
-                              ? Border.all(color: AppConstants.primaryGreen, width: 2)
-                              : null,
-                        ),
-                        child: ListTile(
-                          leading: Icon(
-                            isConnected 
-                                ? Icons.bluetooth_connected 
-                                : Icons.bluetooth,
-                            color: isConnected 
-                                ? AppConstants.primaryGreen 
-                                : Colors.grey,
+                        elevation: 8,
+                      ),
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Icon(
+                            _isScanning ? Icons.search : Icons.bluetooth_searching,
+                            size: 48,
                           ),
-                          title: Text(
-                            device.platformName.isNotEmpty 
-                                ? device.platformName 
-                                : 'Dispositivo sconosciuto',
-                            style: TextStyle(
-                              fontWeight: isConnected 
-                                  ? FontWeight.bold 
-                                  : FontWeight.normal,
-                              color: textColor,
+                          const SizedBox(height: 8),
+                          Text(
+                            _isScanning ? 'RICERCA...' : 'CONNETTI ESP32',
+                            style: const TextStyle(
+                              fontSize: 24,
+                              fontWeight: FontWeight.bold,
                             ),
                           ),
-                          subtitle: Text(
-                            device.remoteId.toString(),
-                            style: TextStyle(
-                              fontSize: 12,
-                              color: widget.isDarkMode 
-                                  ? Colors.grey.shade400 
-                                  : Colors.grey.shade600,
-                            ),
-                          ),
-                          trailing: !isConnected
-                              ? ElevatedButton(
-                                  onPressed: () => _connectToDevice(device),
-                                  style: ElevatedButton.styleFrom(
-                                    backgroundColor: AppConstants.primaryGreen,
-                                    foregroundColor: Colors.black,
-                                  ),
-                                  child: const Text('Connetti'),
-                                )
-                              : const Icon(
-                                  Icons.check_circle,
-                                  color: AppConstants.primaryGreen,
-                                ),
-                        ),
-                      );
-                    },
-                  );
-                } else if (_isScanning) {
-                  return const Center(
-                    child: CircularProgressIndicator(
-                      color: AppConstants.primaryGreen,
+                        ],
+                      ),
                     ),
-                  );
-                } else {
-                  return Center(
+                  ),
+                  const SizedBox(height: 16),
+                  Text(
+                    'Tocca per connettere automaticamente',
+                    style: TextStyle(
+                      fontSize: 14,
+                      color: Colors.grey.shade600,
+                    ),
+                  ),
+                ] else ...[
+                  // Dispositivo connesso
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(24),
+                    decoration: BoxDecoration(
+                      color: cardColor,
+                      borderRadius: BorderRadius.circular(20),
+                      border: Border.all(
+                        color: AppConstants.primaryGreen,
+                        width: 3,
+                      ),
+                    ),
                     child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
                       children: [
-                        Icon(Icons.bluetooth_disabled, 
-                            size: 64, 
-                            color: Colors.grey.shade400),
+                        const Icon(
+                          Icons.check_circle,
+                          color: AppConstants.primaryGreen,
+                          size: 64,
+                        ),
                         const SizedBox(height: 16),
                         Text(
-                          'Nessun dispositivo trovato',
+                          'CONNESSO',
                           style: TextStyle(
-                            fontSize: 16,
-                            color: Colors.grey.shade600,
+                            fontSize: 28,
+                            fontWeight: FontWeight.bold,
+                            color: textColor,
                           ),
                         ),
                         const SizedBox(height: 8),
-                        ElevatedButton.icon(
-                          onPressed: _startScan,
-                          icon: const Icon(Icons.refresh),
-                          label: const Text('Scansiona'),
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: AppConstants.primaryGreen,
-                            foregroundColor: Colors.black,
+                        Text(
+                          widget.bluetoothService.connectedDeviceName ?? 'ESP32',
+                          style: TextStyle(
+                            fontSize: 18,
+                            color: Colors.grey.shade600,
+                          ),
+                        ),
+                        const SizedBox(height: 24),
+                        SizedBox(
+                          width: double.infinity,
+                          child: ElevatedButton(
+                            onPressed: _disconnect,
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.red,
+                              foregroundColor: Colors.white,
+                              padding: const EdgeInsets.symmetric(vertical: 16),
+                            ),
+                            child: const Text(
+                              'DISCONNETTI',
+                              style: TextStyle(
+                                fontSize: 18,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
                           ),
                         ),
                       ],
                     ),
-                  );
-                }
-              },
+                  ),
+                ],
+              ],
             ),
           ),
+
+          const Spacer(),
+
+          // Dispositivi trovati (opzionale)
+          if (_devices.isNotEmpty && !widget.bluetoothService.isConnected)
+            Expanded(
+              child: Column(
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 16),
+                    child: Text(
+                      'Dispositivi trovati:',
+                      style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold,
+                        color: textColor,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Expanded(
+                    child: ListView.builder(
+                      itemCount: _devices.length,
+                      itemBuilder: (context, index) {
+                        final device = _devices[index].device;
+                        return ListTile(
+                          leading: const Icon(
+                            Icons.bluetooth,
+                            color: AppConstants.primaryGreen,
+                          ),
+                          title: Text(
+                            device.platformName,
+                            style: TextStyle(color: textColor),
+                          ),
+                          trailing: TextButton(
+                            onPressed: () => _connectToDevice(device),
+                            child: const Text('Connetti'),
+                          ),
+                        );
+                      },
+                    ),
+                  ),
+                ],
+              ),
+            ),
         ],
       ),
     );

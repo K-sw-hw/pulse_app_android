@@ -4,45 +4,76 @@ import 'package:flutter_blue_plus/flutter_blue_plus.dart' as fbp;
 class BluetoothService {
   fbp.BluetoothDevice? _connectedDevice;
   fbp.BluetoothCharacteristic? _characteristic;
+  StreamSubscription<fbp.BluetoothConnectionState>? _connectionSubscription;
+  Timer? _reconnectTimer;
   
-  // UUID dell'ESP32 (devono corrispondere al codice Arduino)
+  // UUID dell'ESP32 - HARDCODED, l'utente non li vedrà mai
   static const String serviceUUID = "4fafc201-1fb5-459e-8fcc-c5c9c331914b";
   static const String characteristicUUID = "beb5483e-36e1-4688-b7f5-ea07361b26a8";
+  static const String deviceName = "ESP32_Pulse"; // Nome fisso da cercare
   
-  // Stream per i dispositivi trovati
   Stream<List<fbp.ScanResult>> get scanResults => fbp.FlutterBluePlus.scanResults;
   
-  // Stream per lo stato della connessione
   final StreamController<bool> _connectionStateController = 
       StreamController<bool>.broadcast();
   Stream<bool> get connectionState => _connectionStateController.stream;
   
-  bool get isConnected => _connectedDevice != null;
+  final StreamController<String> _statusController = 
+      StreamController<String>.broadcast();
+  Stream<String> get statusStream => _statusController.stream;
+  
+  bool get isConnected => _connectedDevice != null && _characteristic != null;
   fbp.BluetoothDevice? get connectedDevice => _connectedDevice;
+  String? get connectedDeviceName => _connectedDevice?.platformName;
 
-  // Inizia lo scan dei dispositivi Bluetooth
-  Future<void> startScan() async {
+  // AUTO-SCAN e AUTO-CONNESSIONE
+  Future<bool> autoConnect() async {
     try {
-      // Controlla se il Bluetooth è supportato
+      _statusController.add('🔍 Ricerca ESP32...');
+      
       if (await fbp.FlutterBluePlus.isSupported == false) {
-        return;
+        _statusController.add('❌ Bluetooth non supportato');
+        return false;
       }
 
-      // Ferma eventuali scan in corso
-      await fbp.FlutterBluePlus.stopScan();
+      // Avvia scan
+      await fbp.FlutterBluePlus.startScan(timeout: const Duration(seconds: 5));
       
-      // Avvia lo scan (durata 8 secondi per dare più tempo)
-      await fbp.FlutterBluePlus.startScan(
-        timeout: const Duration(seconds: 8),
-        androidUsesFineLocation: true,
-      );
+      // Aspetta che trovi ESP32_Pulse
+      await for (List<fbp.ScanResult> results in fbp.FlutterBluePlus.scanResults) {
+        for (fbp.ScanResult result in results) {
+          if (result.device.platformName.toLowerCase().contains('esp32')) {
+            // TROVATO! Connetti automaticamente
+            await fbp.FlutterBluePlus.stopScan();
+            _statusController.add('✓ ESP32 trovato!');
+            return await connectToDevice(result.device);
+          }
+        }
+      }
+      
+      await fbp.FlutterBluePlus.stopScan();
+      _statusController.add('❌ ESP32 non trovato');
+      return false;
+      
     } catch (e) {
-      // Gestione errori
-      print('Errore scan: $e');
+      _statusController.add('Errore: $e');
+      return false;
     }
   }
 
-  // Ferma lo scan
+  // Scan manuale (per la schermata Bluetooth)
+  Future<void> startScan() async {
+    try {
+      if (await fbp.FlutterBluePlus.isSupported == false) {
+        return;
+      }
+      await fbp.FlutterBluePlus.stopScan();
+      await fbp.FlutterBluePlus.startScan(timeout: const Duration(seconds: 8));
+    } catch (e) {
+      // Ignora errori
+    }
+  }
+
   Future<void> stopScan() async {
     await fbp.FlutterBluePlus.stopScan();
   }
@@ -50,59 +81,60 @@ class BluetoothService {
   // Connetti a un dispositivo
   Future<bool> connectToDevice(fbp.BluetoothDevice device) async {
     try {
-      print('Tentativo connessione a: ${device.platformName}');
+      _statusController.add('🔗 Connessione...');
       
-      // Disconnetti il dispositivo precedente se esiste
       if (_connectedDevice != null) {
         await disconnectDevice();
         await Future.delayed(const Duration(milliseconds: 500));
       }
 
-      // Connetti con timeout più lungo
-      await device.connect(
-        timeout: const Duration(seconds: 15),
-        autoConnect: false,
-      );
-      
-      print('Connesso! Scoperta servizi...');
-      _connectedDevice = device;
-
-      // Aspetta un attimo prima di scoprire i servizi
-      await Future.delayed(const Duration(milliseconds: 1000));
-
-      // Scopri i servizi
-      List<fbp.BluetoothService> services = await device.discoverServices();
-      print('Trovati ${services.length} servizi');
-      
-      // Cerca il servizio specifico dell'ESP32
-      for (fbp.BluetoothService service in services) {
-        print('Servizio: ${service.uuid}');
-        
-        // Controlla se è il nostro servizio
-        if (service.uuid.toString().toLowerCase() == serviceUUID.toLowerCase()) {
-          print('✓ Servizio Pulse trovato!');
+      // Listener per la connessione
+      _connectionSubscription = device.connectionState.listen((state) async {
+        if (state == fbp.BluetoothConnectionState.connected) {
+          _statusController.add('✓ Connesso');
+          _connectionStateController.add(true);
+        } else if (state == fbp.BluetoothConnectionState.disconnected) {
+          _statusController.add('⚠️ Disconnesso');
+          _connectionStateController.add(false);
+          _characteristic = null;
           
-          // Cerca la caratteristica
+          // AUTO-RICONNESSIONE dopo 3 secondi
+          _scheduleReconnect(device);
+        }
+      });
+
+      // Connetti
+      await device.connect(timeout: const Duration(seconds: 10));
+      _connectedDevice = device;
+      
+      await Future.delayed(const Duration(milliseconds: 1000));
+      
+      // Scopri servizi
+      List<fbp.BluetoothService> services = await device.discoverServices();
+      
+      // Cerca servizio e caratteristica
+      for (fbp.BluetoothService service in services) {
+        if (service.uuid.toString().toLowerCase() == serviceUUID.toLowerCase()) {
           for (fbp.BluetoothCharacteristic char in service.characteristics) {
-            print('  Caratteristica: ${char.uuid}');
-            
             if (char.uuid.toString().toLowerCase() == characteristicUUID.toLowerCase()) {
-              print('✓ Caratteristica trovata!');
               _characteristic = char;
               _connectionStateController.add(true);
+              _statusController.add('✅ ESP32 pronto!');
+              
+              // Test connessione
+              await sendCommand('TEST');
               return true;
             }
           }
         }
       }
       
-      // Se arriviamo qui, non abbiamo trovato il servizio
-      print('❌ Servizio o caratteristica non trovati');
+      _statusController.add('❌ Servizio non trovato');
       await disconnectDevice();
       return false;
       
     } catch (e) {
-      print('Errore connessione: $e');
+      _statusController.add('Errore connessione: $e');
       _connectedDevice = null;
       _characteristic = null;
       _connectionStateController.add(false);
@@ -110,15 +142,26 @@ class BluetoothService {
     }
   }
 
-  // Disconnetti dispositivo
+  // Pianifica riconnessione automatica
+  void _scheduleReconnect(fbp.BluetoothDevice device) {
+    _reconnectTimer?.cancel();
+    _reconnectTimer = Timer(const Duration(seconds: 3), () async {
+      _statusController.add('🔄 Riconnessione...');
+      await connectToDevice(device);
+    });
+  }
+
   Future<void> disconnectDevice() async {
     try {
+      _reconnectTimer?.cancel();
+      await _connectionSubscription?.cancel();
+      _connectionSubscription = null;
+      
       if (_connectedDevice != null) {
         await _connectedDevice!.disconnect();
-        print('Disconnesso');
       }
     } catch (e) {
-      print('Errore disconnessione: $e');
+      // Ignora errori
     } finally {
       _connectedDevice = null;
       _characteristic = null;
@@ -126,37 +169,54 @@ class BluetoothService {
     }
   }
 
-  // Invia comando all'ESP32
   Future<bool> sendCommand(String command) async {
-    if (_characteristic == null || _connectedDevice == null) {
-      print('Nessun dispositivo connesso');
+    if (_characteristic == null) {
       return false;
     }
 
     try {
-      print('Invio comando: $command');
+      if (_connectedDevice == null) {
+        return false;
+      }
+
+      var connectionState = await _connectedDevice!.connectionState.first;
+      if (connectionState != fbp.BluetoothConnectionState.connected) {
+        return false;
+      }
+
       await _characteristic!.write(
         command.codeUnits,
         withoutResponse: false,
       );
-      print('Comando inviato con successo');
+      
+      if (command.startsWith('ALERT')) {
+        _statusController.add('⚠️ Alert inviato');
+      }
+      
       return true;
     } catch (e) {
-      print('Errore invio comando: $e');
       return false;
     }
   }
 
-  // Invia notifica di soglia superata
   Future<bool> sendThresholdAlert(double currentDb) async {
-    // Comando: "ALERT:XX" dove XX è il valore dei dB
     String command = 'ALERT:${currentDb.toStringAsFixed(0)}';
-    return await sendCommand(command);
+    bool success = await sendCommand(command);
+    
+    // Se fallisce, tenta di riconnettersi
+    if (!success && _connectedDevice != null) {
+      await connectToDevice(_connectedDevice!);
+      return await sendCommand(command);
+    }
+    
+    return success;
   }
 
-  // Pulisci risorse
   void dispose() {
+    _reconnectTimer?.cancel();
+    _connectionSubscription?.cancel();
     disconnectDevice();
     _connectionStateController.close();
+    _statusController.close();
   }
 }

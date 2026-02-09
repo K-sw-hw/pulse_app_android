@@ -12,7 +12,7 @@ import '../widgets/noise_level_display.dart' as noise;
 import '../widgets/ai_recognition_card.dart' as ai;
 import '../widgets/bottom_navigation_bar.dart';
 import 'bluetooth_screen.dart';
-import '../screens/settings_screen.dart';
+import 'settings_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -54,6 +54,33 @@ class _HomeScreenState extends State<HomeScreen> {
       _adaptiveThreshold = SettingsService.isAdaptiveThreshold();
       _isDarkMode = SettingsService.isDarkMode();
     });
+    
+    // Tenta auto-connessione ESP32
+    _autoConnectESP32();
+  }
+  
+  Future<void> _autoConnectESP32() async {
+    // Aspetta 3 secondi dopo l'avvio
+    await Future.delayed(const Duration(seconds: 3));
+    
+    // Prova a connettersi automaticamente
+    bool connected = await _bluetoothService.autoConnect();
+    
+    if (connected && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Row(
+            children: [
+              Icon(Icons.bluetooth_connected, color: Colors.white),
+              SizedBox(width: 8),
+              Text('ESP32 connesso'),
+            ],
+          ),
+          backgroundColor: AppConstants.primaryGreen,
+          duration: Duration(seconds: 2),
+        ),
+      );
+    }
   }
   
   Future<void> _initializeAudio() async {
@@ -220,16 +247,31 @@ class _HomeScreenState extends State<HomeScreen> {
     });
   }
   
-  void _navigateToBluetooth() {
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (context) => BluetoothScreen(
-          bluetoothService: _bluetoothService,
-          isDarkMode: _isDarkMode,
+  void _navigateToBluetooth() async {
+    // Richiedi permessi Bluetooth prima di aprire la schermata
+    bool hasPermissions = await PermissionService.requestBluetoothPermissions();
+    
+    if (!hasPermissions && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Permessi Bluetooth necessari'),
+          duration: Duration(seconds: 2),
         ),
-      ),
-    );
+      );
+      return;
+    }
+    
+    if (mounted) {
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (context) => BluetoothScreen(
+            bluetoothService: _bluetoothService,
+            isDarkMode: _isDarkMode,
+          ),
+        ),
+      );
+    }
   }
   
   void _navigateToSettings() {
