@@ -30,7 +30,8 @@ class AppConstants {
   static const double maxSensitivity = 2.0;
   
   // Grafico
-  static const int maxDataPoints = 300; // 30 secondi a 100ms
+  static const int maxDataPoints = 50; // 5 secondi con sampling ogni 100ms
+  static const int samplingInterval = 5; // Prendi 1 punto ogni 5
   
   // Threshold settings
   static const double defaultThresholdDb = 80.0;

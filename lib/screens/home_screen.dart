@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'dart:async';
 import '../services/audio_service.dart';
 import '../services/bluetooth_service.dart';
+import '../services/ai_service.dart';
 import '../services/permission_service.dart';
 import '../services/settings_service.dart';
 import '../models/audio_data.dart';
@@ -24,19 +25,23 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen> {
   final AudioService _audioService = AudioService();
   final BluetoothService _bluetoothService = BluetoothService();
+  final AiService _aiService = AiService();
   
   final List<AudioData> _audioDataList = [];
+  int _sampleCounter = 0;
   NoiseClassification? _currentClassification;
   double _currentDecibels = 0.0;
   double _thresholdDb = AppConstants.defaultThresholdDb;
   bool _adaptiveThreshold = false;
   bool _isDarkMode = false;
   bool _lastAlertSent = false;
+  bool _aiInitialized = false;
   
   // Buffer per soglia adattiva
   final List<double> _recentDecibels = [];
   
   StreamSubscription? _audioSubscription;
+  StreamSubscription? _rawAudioSubscription;
   StreamSubscription? _resetSubscription;
   Timer? _classificationTimer;
   
@@ -44,7 +49,13 @@ class _HomeScreenState extends State<HomeScreen> {
   void initState() {
     super.initState();
     _loadSettings();
+    _initializeAI();
     _initializeAudio();
+  }
+  
+  Future<void> _initializeAI() async {
+    _aiInitialized = await _aiService.initialize();
+    if (mounted) setState(() {});
   }
   
   Future<void> _loadSettings() async {
@@ -101,11 +112,18 @@ class _HomeScreenState extends State<HomeScreen> {
       _audioSubscription = _audioService.audioStream.listen((audioData) {
         if (!mounted) return;
         setState(() {
-          _audioDataList.add(audioData);
           _currentDecibels = audioData.decibels;
           
-          if (_audioDataList.length > AppConstants.maxDataPoints) {
-            _audioDataList.removeAt(0);
+          // Sampling: aggiungi 1 punto ogni 5
+          _sampleCounter++;
+          if (_sampleCounter >= AppConstants.samplingInterval) {
+            _audioDataList.add(audioData);
+            _sampleCounter = 0;
+            
+            // Mantieni solo gli ultimi maxDataPoints
+            if (_audioDataList.length > AppConstants.maxDataPoints) {
+              _audioDataList.removeAt(0);
+            }
           }
           
           // Aggiorna buffer per soglia adattiva
@@ -242,6 +260,7 @@ class _HomeScreenState extends State<HomeScreen> {
   void _resetGraph() {
     setState(() {
       _audioDataList.clear();
+      _sampleCounter = 0;
       _currentDecibels = 0.0;
       _currentClassification = null;
     });
@@ -294,11 +313,13 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void dispose() {
     _audioSubscription?.cancel();
+    _rawAudioSubscription?.cancel();
     _resetSubscription?.cancel();
     _classificationTimer?.cancel();
     _audioService.stopRecording();
     _audioService.dispose();
     _bluetoothService.dispose();
+    _aiService.dispose();
     super.dispose();
   }
   

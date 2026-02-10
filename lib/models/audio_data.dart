@@ -11,6 +11,7 @@ class AudioData {
   AudioData copyWith({
     double? decibels,
     DateTime? timestamp,
+    
   }) {
     return AudioData(
       decibels: decibels ?? this.decibels,
@@ -22,9 +23,12 @@ class AudioData {
 class NoiseClassification {
   final String noiseType;
   final double confidence;
-  
+  final List<MapEntry<String, double>> topLabels;
+
   NoiseClassification({
     required this.noiseType,
     required this.confidence,
+    required this.topLabels,
+
   });
 }
